@@ -494,4 +494,54 @@ defmodule Phoenix.ConnTest do
   def bypass_through(conn, router, pipelines \\ []) do
     Plug.Conn.put_private(conn, :phoenix_bypass, {router, List.wrap(pipelines)})
   end
+
+  def assert_sent(status_int_or_atom, opts \\ [], func) do
+    import ExUnit.Assertions
+
+    timeout = opts[:timeout] || 100
+    expected_status = Plug.Conn.Status.code(status_int_or_atom)
+    discard_previously_sent()
+    request = wrap_request(func)
+
+    receive do
+      {ref, {^expected_status = sent_status, _headers, body}} when is_reference(ref) ->
+        assert expected_status == sent_status
+        discard_previously_sent()
+
+        body
+
+      {ref, {sent_status, _headers, _body}} when is_reference(ref) ->
+        reraise_error(expected_status, sent_status, request)
+
+    after timeout ->
+      raise ExUnit.AssertionError, message: "No response sent after #{timeout}ms."
+    end
+  end
+
+  defp discard_previously_sent() do
+    receive do
+      {ref, {_status, _headers, _body}} when is_reference(ref) ->
+        discard_previously_sent()
+      {:plug_conn, :sent} -> discard_previously_sent()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp wrap_request(func) do
+    try do
+      {:ok, func.()}
+    rescue
+      exception -> {:error, {exception, System.stacktrace()}}
+    end
+  end
+
+  defp reraise_error(expected_stat, sent_stat, {:error, {exception, stack}}) do
+    wrapper = %ExUnit.AssertionError{message: """
+    expected response status to be #{expected_stat}, but got #{sent_stat} from:
+
+    #{Exception.format_banner(:error, exception)}
+    """}
+    reraise(wrapper, stack)
+  end
 end
